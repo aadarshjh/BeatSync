@@ -8,7 +8,7 @@ import RoomPlaylist from "./RoomPlaylist";
 import RoomChat from "./RoomChat";
 import RoomMembers from "./RoomMembers";
 import YouTubeLibrary from "./YouTubeLibrary";
-import YouTubeMiniPlayer from "./YouTubeMiniPlayer";
+import RoomYouTubePlayer from "./RoomYouTubePlayer";
 import "./App.css";
 
 export default function App() {
@@ -82,9 +82,9 @@ export default function App() {
       return;
     }
 
-    setSongs(data);
+    setSongs(data || []);
 
-    if (data.length > 0 && currentIndex >= data.length) {
+    if (data?.length > 0 && currentIndex >= data.length) {
       setCurrentIndex(0);
     }
   }, [session, currentIndex]);
@@ -105,14 +105,17 @@ export default function App() {
       .eq("room_code", room.room_code)
       .order("created_at", { ascending: true });
 
+    console.log("ROOM SONGS FETCHED:", data);
+    console.log("ROOM SONGS ERROR:", error);
+
     if (error) {
       alert(error.message);
       return;
     }
 
-    setRoomSongs(data);
+    setRoomSongs(data || []);
 
-    if (data.length > 0 && roomCurrentIndex >= data.length) {
+    if (data?.length > 0 && roomCurrentIndex >= data.length) {
       setRoomCurrentIndex(0);
     }
   }, [room, roomCurrentIndex]);
@@ -159,17 +162,28 @@ export default function App() {
   const addSongToRoom = async (song) => {
     if (!room) return;
 
-    const { error } = await supabase.from("room_songs").insert([
-      {
-        room_code: room.room_code,
-        song_name: song.song_name,
-        song_url: song.song_url,
-        added_by: session.user.id,
-      },
-    ]);
+    const { data, error } = await supabase
+      .from("room_songs")
+      .insert([
+        {
+          room_code: room.room_code,
+          song_name: song.song_name,
+          song_url: song.song_url,
+          added_by: session.user.id,
+        },
+      ])
+      .select();
 
-    if (error) alert(error.message);
-    else alert("Song added to Room Playlist!");
+    console.log("INSERTED ROOM SONG:", data);
+    console.log("INSERT ERROR:", error);
+
+    if (error) {
+      alert("Insert Failed: " + error.message);
+      return;
+    }
+
+    alert("Song added to Room Playlist!");
+    fetchRoomSongs();
   };
 
   // ---------------------------
@@ -222,7 +236,7 @@ export default function App() {
           // Host ignore updates
           if (session && updatedRoom.host_id === session.user.id) return;
 
-          // Sync MP3 song index
+          // Sync MP3 song index (if host using MP3 mode)
           if (updatedRoom.current_song_url) {
             const idx = roomSongs.findIndex(
               (s) => s.song_url === updatedRoom.current_song_url
@@ -314,7 +328,7 @@ export default function App() {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play();
+      await audioRef.current.play();
       setIsPlaying(true);
     }
 
@@ -469,36 +483,29 @@ export default function App() {
         <div className="spotify-layout">
           {/* LEFT SIDEBAR */}
           <div className="sidebar-left">
-            <div className="sidebar-library">
-              <h2 className="sidebar-title">Library</h2>
+            <h3 className="sidebar-title">Library</h3>
 
-              <div className="sidebar-tabs">
-                <button
-                  className={`sidebar-tab ${
-                    page === "player" ? "active" : ""
-                  }`}
-                  onClick={() => setPage("player")}
-                >
-                  🎵 Player
-                </button>
+            <div className="sidebar-menu">
+              <button
+                className={page === "player" ? "menu-btn active-menu" : "menu-btn"}
+                onClick={() => setPage("player")}
+              >
+                🎵 Player
+              </button>
 
-                <button
-                  className={`sidebar-tab ${
-                    page === "library" ? "active" : ""
-                  }`}
-                  onClick={() => setPage("library")}
-                >
-                  🌍 Online Library
-                </button>
-              </div>
+              <button
+                className={page === "library" ? "menu-btn active-menu" : "menu-btn"}
+                onClick={() => setPage("library")}
+              >
+                🌍 Online Library
+              </button>
             </div>
 
             {page === "player" && (
               <>
                 {!room ? (
                   <div className="sidebar-section">
-                    <h4 className="sidebar-heading">🎶 Your Playlist</h4>
-
+                    <h4>🎶 Your Playlist</h4>
                     <Playlist
                       songs={songs}
                       currentIndex={currentIndex}
@@ -508,8 +515,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="sidebar-section">
-                    <h4 className="sidebar-heading">🎧 Room Playlist</h4>
-
+                    <h4>🎧 Room Playlist</h4>
                     <RoomPlaylist
                       roomSongs={roomSongs}
                       roomCurrentIndex={roomCurrentIndex}
@@ -609,6 +615,7 @@ export default function App() {
             {page === "library" && (
               <>
                 <YouTubeLibrary session={session} room={room} />
+                {room && <RoomYouTubePlayer room={room} session={session} />}
               </>
             )}
           </div>
@@ -625,7 +632,7 @@ export default function App() {
             )}
           </div>
 
-          {/* BOTTOM PLAYER BAR (ONLY FOR MP3 PLAYER PAGE) */}
+          {/* BOTTOM PLAYER BAR */}
           {page === "player" && activePlaylist.length > 0 && (
             <div className="bottom-player">
               <div className="bottom-song">
@@ -689,15 +696,11 @@ export default function App() {
                   max="1"
                   step="0.01"
                   value={volume}
+
                   onChange={handleVolume}
                 />
               </div>
             </div>
-          )}
-
-          {/* YOUTUBE MINI PLAYER (ONLY IN LIBRARY PAGE) */}
-          {room && page === "library" && (
-            <YouTubeMiniPlayer room={room} session={session} />
           )}
         </div>
       )}
