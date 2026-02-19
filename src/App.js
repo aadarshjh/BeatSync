@@ -4,28 +4,45 @@ import Auth from "./Auth";
 import UploadSong from "./UploadSong";
 import Playlist from "./Playlist";
 import Room from "./Room";
+import RoomPlaylist from "./RoomPlaylist";
+import RoomChat from "./RoomChat";
+import RoomMembers from "./RoomMembers";
+import YouTubeLibrary from "./YouTubeLibrary";
+import YouTubeMiniPlayer from "./YouTubeMiniPlayer";
 import "./App.css";
 
 export default function App() {
   const [session, setSession] = useState(null);
 
+  // Pages
+  const [page, setPage] = useState("player"); // player, library
+
+  // Personal Songs
   const [songs, setSongs] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
 
+  // Room Songs
+  const [roomSongs, setRoomSongs] = useState([]);
+  const [roomCurrentIndex, setRoomCurrentIndex] = useState(0);
+
+  // Player
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-
   const [volume, setVolume] = useState(1);
 
+  // Player modes
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState("off"); // off, all, one
 
+  // Room
   const [room, setRoom] = useState(null);
 
   const audioRef = useRef(null);
 
-  // Get session
+  // ---------------------------
+  // SESSION
+  // ---------------------------
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -42,7 +59,15 @@ export default function App() {
     };
   }, []);
 
-  // Fetch songs from Supabase DB
+  // ---------------------------
+  // HOST CHECK
+  // ---------------------------
+  const isHost = room && session && room.host_id === session.user.id;
+  const canControlPlayer = !room || isHost;
+
+  // ---------------------------
+  // FETCH PERSONAL SONGS
+  // ---------------------------
   const fetchSongs = useCallback(async () => {
     if (!session) return;
 
@@ -64,30 +89,124 @@ export default function App() {
     }
   }, [session, currentIndex]);
 
-  // Fetch songs after login
   useEffect(() => {
     if (session) fetchSongs();
   }, [session, fetchSongs]);
 
-  // Load song when index changes
+  // ---------------------------
+  // FETCH ROOM SONGS
+  // ---------------------------
+  const fetchRoomSongs = useCallback(async () => {
+    if (!room) return;
+
+    const { data, error } = await supabase
+      .from("room_songs")
+      .select("*")
+      .eq("room_code", room.room_code)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setRoomSongs(data);
+
+    if (data.length > 0 && roomCurrentIndex >= data.length) {
+      setRoomCurrentIndex(0);
+    }
+  }, [room, roomCurrentIndex]);
+
   useEffect(() => {
-    if (!songs.length) return;
+    if (room) fetchRoomSongs();
+  }, [room, fetchRoomSongs]);
+
+  // ---------------------------
+  // ACTIVE PLAYLIST SOURCE
+  // ---------------------------
+  const activePlaylist = room ? roomSongs : songs;
+  const activeIndex = room ? roomCurrentIndex : currentIndex;
+
+  // ---------------------------
+  // LOAD SONG WHEN INDEX CHANGES
+  // ---------------------------
+  useEffect(() => {
+    if (!activePlaylist.length) return;
+    if (!audioRef.current) return;
 
     audioRef.current.load();
 
     if (isPlaying) {
       audioRef.current.play();
     }
-  }, [currentIndex, songs, isPlaying]);
+  }, [activeIndex, activePlaylist, isPlaying]);
 
-  // -------------------------
-  // GROUP LISTENING REALTIME
-  // -------------------------
+  // ---------------------------
+  // UPDATE ROOM (HOST ONLY)
+  // ---------------------------
+  const updateRoom = async (updates) => {
+    if (!room || !isHost) return;
+
+    await supabase
+      .from("rooms")
+      .update(updates)
+      .eq("room_code", room.room_code);
+  };
+
+  // ---------------------------
+  // ADD SONG TO ROOM
+  // ---------------------------
+  const addSongToRoom = async (song) => {
+    if (!room) return;
+
+    const { error } = await supabase.from("room_songs").insert([
+      {
+        room_code: room.room_code,
+        song_name: song.song_name,
+        song_url: song.song_url,
+        added_by: session.user.id,
+      },
+    ]);
+
+    if (error) alert(error.message);
+    else alert("Song added to Room Playlist!");
+  };
+
+  // ---------------------------
+  // REALTIME ROOM SONGS SYNC
+  // ---------------------------
   useEffect(() => {
     if (!room) return;
 
     const channel = supabase
-      .channel("room-sync")
+      .channel(`room-songs-${room.room_code}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "room_songs",
+          filter: `room_code=eq.${room.room_code}`,
+        },
+        () => {
+          fetchRoomSongs();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [room, fetchRoomSongs]);
+
+  // ---------------------------
+  // REALTIME ROOM PLAYER SYNC
+  // ---------------------------
+  useEffect(() => {
+    if (!room) return;
+
+    const channel = supabase
+      .channel(`room-sync-${room.room_code}`)
       .on(
         "postgres_changes",
         {
@@ -100,29 +219,40 @@ export default function App() {
           const updatedRoom = payload.new;
           setRoom(updatedRoom);
 
-          // Sync song
+          // Host ignore updates
+          if (session && updatedRoom.host_id === session.user.id) return;
+
+          // Sync MP3 song index
           if (updatedRoom.current_song_url) {
-            const songIndex = songs.findIndex(
+            const idx = roomSongs.findIndex(
               (s) => s.song_url === updatedRoom.current_song_url
             );
 
-            if (songIndex !== -1) {
-              setCurrentIndex(songIndex);
+            if (idx !== -1) {
+              setRoomCurrentIndex(idx);
             }
           }
 
-          // Sync time
-          if (audioRef.current) {
-            audioRef.current.currentTime = updatedRoom.playback_time || 0;
+          // Drift correction for MP3 player
+          if (audioRef.current && updatedRoom.playback_time !== null) {
+            const serverTime = updatedRoom.playback_time || 0;
+            const localTime = audioRef.current.currentTime;
+            const drift = Math.abs(localTime - serverTime);
+
+            if (drift > 0.7) {
+              audioRef.current.currentTime = serverTime;
+            }
           }
 
-          // Sync play/pause
-          if (updatedRoom.is_playing) {
-            audioRef.current.play();
-            setIsPlaying(true);
-          } else {
-            audioRef.current.pause();
-            setIsPlaying(false);
+          // Play/Pause sync for MP3 player
+          if (audioRef.current) {
+            if (updatedRoom.is_playing) {
+              audioRef.current.play();
+              setIsPlaying(true);
+            } else {
+              audioRef.current.pause();
+              setIsPlaying(false);
+            }
           }
         }
       )
@@ -131,114 +261,122 @@ export default function App() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [room, songs]);
+  }, [room, roomSongs, session]);
 
-  // Check if current user is host
-  const isHost = room && session && room.host_id === session.user.id;
+  // ---------------------------
+  // DRIFT SYNC TIMER (HOST MP3)
+  // ---------------------------
+  useEffect(() => {
+    if (!room || !session || !isHost) return;
+    if (!roomSongs.length) return;
 
-  // Update room (only host can update)
-  const updateRoom = async (updates) => {
-    if (!room || !isHost) return;
+    const interval = setInterval(async () => {
+      if (!audioRef.current) return;
 
-    await supabase
-      .from("rooms")
-      .update(updates)
-      .eq("room_code", room.room_code);
-  };
+      await supabase
+        .from("rooms")
+        .update({
+          playback_time: audioRef.current.currentTime,
+          is_playing: !audioRef.current.paused,
+          current_song_url: roomSongs[roomCurrentIndex]?.song_url,
+          current_song_name: roomSongs[roomCurrentIndex]?.song_name,
+        })
+        .eq("room_code", room.room_code);
+    }, 2000);
 
-  // Delete Song (DB only)
+    return () => clearInterval(interval);
+  }, [room, session, isHost, roomSongs, roomCurrentIndex]);
+
+  // ---------------------------
+  // DELETE PERSONAL SONG
+  // ---------------------------
   const deleteSong = async (song) => {
     try {
       const { error } = await supabase.from("songs").delete().eq("id", song.id);
 
       if (error) throw error;
 
-      alert("Song deleted from database!");
+      alert("Song deleted!");
       fetchSongs();
     } catch (err) {
       alert(err.message);
     }
   };
 
-  // Play/Pause
+  // ---------------------------
+  // PLAYER CONTROLS
+  // ---------------------------
   const togglePlay = async () => {
-    if (!songs.length) return;
+    if (!activePlaylist.length) return;
+    if (!canControlPlayer) return;
 
     if (isPlaying) {
       audioRef.current.pause();
       setIsPlaying(false);
-
-      await updateRoom({
-        current_song_url: songs[currentIndex].song_url,
-        current_song_name: songs[currentIndex].song_name,
-        playback_time: audioRef.current.currentTime,
-        is_playing: false,
-      });
     } else {
       audioRef.current.play();
       setIsPlaying(true);
-
-      await updateRoom({
-        current_song_url: songs[currentIndex].song_url,
-        current_song_name: songs[currentIndex].song_name,
-        playback_time: audioRef.current.currentTime,
-        is_playing: true,
-      });
     }
+
+    await updateRoom({
+      current_song_url: roomSongs[roomCurrentIndex]?.song_url,
+      current_song_name: roomSongs[roomCurrentIndex]?.song_name,
+      playback_time: audioRef.current.currentTime,
+      is_playing: !isPlaying,
+    });
   };
 
-  // Next Song
   const nextSong = async () => {
-    if (!songs.length) return;
+    if (!activePlaylist.length) return;
+    if (!canControlPlayer) return;
 
     let nextIndex;
 
     if (shuffle) {
-      nextIndex = Math.floor(Math.random() * songs.length);
+      nextIndex = Math.floor(Math.random() * activePlaylist.length);
     } else {
-      nextIndex = (currentIndex + 1) % songs.length;
+      nextIndex = (activeIndex + 1) % activePlaylist.length;
     }
 
-    if (repeat === "off" && currentIndex === songs.length - 1 && !shuffle) {
-      setIsPlaying(false);
-      return;
-    }
+    if (room) setRoomCurrentIndex(nextIndex);
+    else setCurrentIndex(nextIndex);
 
-    setCurrentIndex(nextIndex);
     setIsPlaying(true);
 
     await updateRoom({
-      current_song_url: songs[nextIndex].song_url,
-      current_song_name: songs[nextIndex].song_name,
+      current_song_url: roomSongs[nextIndex]?.song_url,
+      current_song_name: roomSongs[nextIndex]?.song_name,
       playback_time: 0,
       is_playing: true,
     });
   };
 
-  // Previous Song
   const prevSong = async () => {
-    if (!songs.length) return;
+    if (!activePlaylist.length) return;
+    if (!canControlPlayer) return;
 
     let prevIndex;
 
     if (shuffle) {
-      prevIndex = Math.floor(Math.random() * songs.length);
+      prevIndex = Math.floor(Math.random() * activePlaylist.length);
     } else {
-      prevIndex = (currentIndex - 1 + songs.length) % songs.length;
+      prevIndex =
+        (activeIndex - 1 + activePlaylist.length) % activePlaylist.length;
     }
 
-    setCurrentIndex(prevIndex);
+    if (room) setRoomCurrentIndex(prevIndex);
+    else setCurrentIndex(prevIndex);
+
     setIsPlaying(true);
 
     await updateRoom({
-      current_song_url: songs[prevIndex].song_url,
-      current_song_name: songs[prevIndex].song_name,
+      current_song_url: roomSongs[prevIndex]?.song_url,
+      current_song_name: roomSongs[prevIndex]?.song_name,
       playback_time: 0,
       is_playing: true,
     });
   };
 
-  // Song End
   const handleSongEnd = async () => {
     if (repeat === "one") {
       audioRef.current.currentTime = 0;
@@ -255,15 +393,17 @@ export default function App() {
     nextSong();
   };
 
-  // Repeat Toggle
   const toggleRepeat = () => {
+    if (!canControlPlayer) return;
+
     if (repeat === "off") setRepeat("all");
     else if (repeat === "all") setRepeat("one");
     else setRepeat("off");
   };
 
-  // Seek
   const handleSeek = async (e) => {
+    if (!canControlPlayer) return;
+
     const newTime = e.target.value;
     audioRef.current.currentTime = newTime;
     setCurrentTime(newTime);
@@ -273,24 +413,20 @@ export default function App() {
     });
   };
 
-  // Time Update
   const handleTimeUpdate = () => {
     setCurrentTime(audioRef.current.currentTime);
   };
 
-  // Duration Update
   const handleLoadedMetadata = () => {
     setDuration(audioRef.current.duration);
   };
 
-  // Volume
   const handleVolume = (e) => {
     const newVol = e.target.value;
     setVolume(newVol);
     audioRef.current.volume = newVol;
   };
 
-  // Format Time
   const formatTime = (time) => {
     if (!time) return "0:00";
     const min = Math.floor(time / 60);
@@ -298,87 +434,239 @@ export default function App() {
     return `${min}:${sec < 10 ? "0" : ""}${sec}`;
   };
 
-  // Logout
+  // ---------------------------
+  // LOGOUT
+  // ---------------------------
   const logout = async () => {
     await supabase.auth.signOut();
     setSession(null);
     setSongs([]);
+    setRoomSongs([]);
     setCurrentIndex(0);
+    setRoomCurrentIndex(0);
     setIsPlaying(false);
     setRoom(null);
   };
 
   return (
-    <div className="app">
-      <h1>🎵 BeatSync Music Player</h1>
+    <div className="spotify-app">
+      <div className="top-header">
+        <h2>🎵 BeatSync</h2>
 
-      {!session ? (
-        <Auth setSession={setSession} />
-      ) : (
-        <div className="dashboard">
-          <div className="top-bar">
-            <p>Logged in as: {session.user.email}</p>
+        {session && (
+          <div className="top-user">
+            <span>{session.user.email}</span>
             <button onClick={logout}>Logout</button>
           </div>
+        )}
+      </div>
 
-          {!room ? (
-            <Room session={session} setRoom={setRoom} />
-          ) : (
-            <div className="room-info">
-              <h3>
-                Room Code:{" "}
-                <span style={{ color: "#1db954" }}>{room.room_code}</span>
-              </h3>
+      {!session ? (
+        <div className="auth-page">
+          <Auth setSession={setSession} />
+        </div>
+      ) : (
+        <div className="spotify-layout">
+          {/* LEFT SIDEBAR */}
+          <div className="sidebar-left">
+            <div className="sidebar-library">
+              <h2 className="sidebar-title">Library</h2>
 
-              <p style={{ color: "#bbb" }}>
-                {isHost ? "👑 You are Host" : "🎧 You are Listener"}
-              </p>
+              <div className="sidebar-tabs">
+                <button
+                  className={`sidebar-tab ${
+                    page === "player" ? "active" : ""
+                  }`}
+                  onClick={() => setPage("player")}
+                >
+                  🎵 Player
+                </button>
 
-              <button onClick={() => setRoom(null)}>❌ Leave Room</button>
+                <button
+                  className={`sidebar-tab ${
+                    page === "library" ? "active" : ""
+                  }`}
+                  onClick={() => setPage("library")}
+                >
+                  🌍 Online Library
+                </button>
+              </div>
             </div>
-          )}
 
-          <UploadSong user={session.user} refreshSongs={fetchSongs} />
+            {page === "player" && (
+              <>
+                {!room ? (
+                  <div className="sidebar-section">
+                    <h4 className="sidebar-heading">🎶 Your Playlist</h4>
 
-          {songs.length > 0 ? (
-            <div className="player">
-              <h2>Now Playing:</h2>
-              <p className="song-name">{songs[currentIndex]?.song_name}</p>
+                    <Playlist
+                      songs={songs}
+                      currentIndex={currentIndex}
+                      setCurrentIndex={setCurrentIndex}
+                      deleteSong={deleteSong}
+                    />
+                  </div>
+                ) : (
+                  <div className="sidebar-section">
+                    <h4 className="sidebar-heading">🎧 Room Playlist</h4>
 
-              <audio
-                ref={audioRef}
-                onTimeUpdate={handleTimeUpdate}
-                onLoadedMetadata={handleLoadedMetadata}
-                onEnded={handleSongEnd}
-              >
-                <source src={songs[currentIndex]?.song_url} type="audio/mpeg" />
-              </audio>
+                    <RoomPlaylist
+                      roomSongs={roomSongs}
+                      roomCurrentIndex={roomCurrentIndex}
+                      setRoomCurrentIndex={setRoomCurrentIndex}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
 
-              <div className="controls">
+          {/* CENTER MAIN */}
+          <div className="main-center">
+            {!room ? (
+              <Room session={session} setRoom={setRoom} />
+            ) : (
+              <div className="room-banner">
+                <h3>
+                  Room Code: <span className="room-code">{room.room_code}</span>
+                </h3>
+
+                <p>{isHost ? "👑 You are Host" : "🎧 You are Listener"}</p>
+
+                {!isHost && (
+                  <p style={{ color: "#1db954", fontWeight: "bold" }}>
+                    Host is controlling playback 🎧
+                  </p>
+                )}
+
+                <button
+                  className="leave-room-btn"
+                  onClick={() => {
+                    setRoom(null);
+                    setRoomSongs([]);
+                  }}
+                >
+                  Leave Room
+                </button>
+              </div>
+            )}
+
+            {/* PLAYER PAGE */}
+            {page === "player" && (
+              <>
+                <UploadSong user={session.user} refreshSongs={fetchSongs} />
+
+                {/* HOST ADD SONGS */}
+                {room && isHost && (
+                  <div className="add-room-song">
+                    <h3>Add Songs to Room</h3>
+
+                    {songs.length === 0 ? (
+                      <p style={{ color: "gray" }}>
+                        Upload songs first to add into room playlist.
+                      </p>
+                    ) : (
+                      songs.map((song) => (
+                        <button
+                          key={song.id}
+                          className="room-add-btn"
+                          onClick={() => addSongToRoom(song)}
+                        >
+                          ➕ {song.song_name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {/* MAIN MP3 PLAYER */}
+                {activePlaylist.length > 0 ? (
+                  <div className="now-playing">
+                    <h2>Now Playing</h2>
+                    <p className="song-title-main">
+                      {activePlaylist[activeIndex]?.song_name}
+                    </p>
+
+                    <audio
+                      ref={audioRef}
+                      onTimeUpdate={handleTimeUpdate}
+                      onLoadedMetadata={handleLoadedMetadata}
+                      onEnded={handleSongEnd}
+                    >
+                      <source
+                        src={activePlaylist[activeIndex]?.song_url}
+                        type="audio/mpeg"
+                      />
+                    </audio>
+                  </div>
+                ) : (
+                  <p style={{ color: "gray" }}>No songs available.</p>
+                )}
+              </>
+            )}
+
+            {/* ONLINE LIBRARY PAGE */}
+            {page === "library" && (
+              <>
+                <YouTubeLibrary session={session} room={room} />
+              </>
+            )}
+          </div>
+
+          {/* RIGHT SIDEBAR */}
+          <div className="sidebar-right">
+            {room ? (
+              <>
+                <RoomChat room={room} session={session} />
+                <RoomMembers room={room} session={session} />
+              </>
+            ) : (
+              <p style={{ color: "gray" }}>Join a room to use chat & members.</p>
+            )}
+          </div>
+
+          {/* BOTTOM PLAYER BAR (ONLY FOR MP3 PLAYER PAGE) */}
+          {page === "player" && activePlaylist.length > 0 && (
+            <div className="bottom-player">
+              <div className="bottom-song">
+                <p>{activePlaylist[activeIndex]?.song_name}</p>
+              </div>
+
+              <div className="bottom-controls">
                 <button
                   onClick={() => setShuffle(!shuffle)}
                   className={shuffle ? "active-btn" : ""}
+                  disabled={!canControlPlayer}
                 >
-                  🔀 Shuffle
+                  🔀
                 </button>
 
-                <button onClick={prevSong}>⏮ Prev</button>
-
-                <button onClick={togglePlay}>
-                  {isPlaying ? "⏸ Pause" : "▶ Play"}
+                <button onClick={prevSong} disabled={!canControlPlayer}>
+                  ⏮
                 </button>
 
-                <button onClick={nextSong}>Next ⏭</button>
+                <button
+                  onClick={togglePlay}
+                  className="play-btn"
+                  disabled={!canControlPlayer}
+                >
+                  {isPlaying ? "⏸" : "▶"}
+                </button>
+
+                <button onClick={nextSong} disabled={!canControlPlayer}>
+                  ⏭
+                </button>
 
                 <button
                   onClick={toggleRepeat}
                   className={repeat !== "off" ? "active-btn" : ""}
+                  disabled={!canControlPlayer}
                 >
-                  🔁 Repeat: {repeat}
+                  🔁
                 </button>
               </div>
 
-              <div className="seek-bar">
+              <div className="bottom-seek">
                 <span>{formatTime(currentTime)}</span>
 
                 <input
@@ -387,13 +675,14 @@ export default function App() {
                   max={duration || 0}
                   value={currentTime}
                   onChange={handleSeek}
+                  disabled={!canControlPlayer}
                 />
 
                 <span>{formatTime(duration)}</span>
               </div>
 
-              <div className="volume">
-                <label>🔊 Volume:</label>
+              <div className="bottom-volume">
+                <label>🔊</label>
                 <input
                   type="range"
                   min="0"
@@ -403,18 +692,12 @@ export default function App() {
                   onChange={handleVolume}
                 />
               </div>
-
-              <Playlist
-                songs={songs}
-                currentIndex={currentIndex}
-                setCurrentIndex={setCurrentIndex}
-                deleteSong={deleteSong}
-              />
             </div>
-          ) : (
-            <p style={{ color: "gray", marginTop: "20px" }}>
-              No songs uploaded yet. Upload some MP3 files 🎶
-            </p>
+          )}
+
+          {/* YOUTUBE MINI PLAYER (ONLY IN LIBRARY PAGE) */}
+          {room && page === "library" && (
+            <YouTubeMiniPlayer room={room} session={session} />
           )}
         </div>
       )}

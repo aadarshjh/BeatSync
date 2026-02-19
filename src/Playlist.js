@@ -14,45 +14,38 @@ export default function Playlist({
 
   return (
     <div className="playlist">
-      <h3>🎶 Playlist</h3>
-
-      <input
-        className="search-box"
-        type="text"
-        placeholder="🔍 Search songs..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+      <div className="playlist-search">
+        <input
+          type="text"
+          placeholder="🔍 Search songs..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="search-input"
+        />
+      </div>
 
       {filteredSongs.length === 0 ? (
-        <p style={{ color: "gray" }}>No songs found.</p>
+        <p style={{ color: "gray", marginTop: "10px" }}>No songs found.</p>
       ) : (
-        filteredSongs.map((song) => {
-          const originalIndex = songs.findIndex((s) => s.id === song.id);
-
-          return (
-            <div
-              key={song.id}
-              className={`playlist-item ${
-                originalIndex === currentIndex ? "active" : ""
-              }`}
+        filteredSongs.map((song, index) => (
+          <div
+            key={song.id}
+            className={`playlist-item ${
+              index === currentIndex ? "active" : ""
+            }`}
+          >
+            <span
+              className="playlist-song"
+              onClick={() => setCurrentIndex(index)}
             >
-              <div
-                className="song-title"
-                onClick={() => setCurrentIndex(originalIndex)}
-              >
-                {song.song_name}
-              </div>
+              🎵 {song.song_name}
+            </span>
 
-              <button
-                className="delete-btn"
-                onClick={() => deleteSong(song)}
-              >
-                🗑
-              </button>
-            </div>
-          );
-        })
+            <button className="delete-btn" onClick={() => deleteSong(song)}>
+              ❌
+            </button>
+          </div>
+        ))
       )}
     </div>
   );

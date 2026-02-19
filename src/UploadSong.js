@@ -2,62 +2,66 @@ import React, { useState } from "react";
 import { supabase } from "./supabaseClient";
 
 export default function UploadSong({ user, refreshSongs }) {
-  const [file, setFile] = useState(null);
+  const [songFile, setSongFile] = useState(null);
   const [uploading, setUploading] = useState(false);
 
   const uploadSong = async () => {
-    if (!file) return alert("Please select a song!");
+    if (!songFile) return alert("Please select a song!");
+
+    setUploading(true);
 
     try {
-      setUploading(true);
-
-      const fileName = `${user.id}/${Date.now()}-${file.name}`;
+      const fileExt = songFile.name.split(".").pop();
+      const fileName = `${user.id}-${Date.now()}.${fileExt}`;
 
       const { error: uploadError } = await supabase.storage
         .from("songs")
-        .upload(fileName, file);
+        .upload(fileName, songFile);
 
       if (uploadError) throw uploadError;
 
-      const { data } = supabase.storage.from("songs").getPublicUrl(fileName);
-      const songUrl = data.publicUrl;
+      const { data: urlData } = supabase.storage
+        .from("songs")
+        .getPublicUrl(fileName);
+
+      const songUrl = urlData.publicUrl;
 
       const { error: dbError } = await supabase.from("songs").insert([
         {
           user_id: user.id,
-          song_name: file.name,
+          song_name: songFile.name,
           song_url: songUrl,
         },
       ]);
 
       if (dbError) throw dbError;
 
-      alert("Song uploaded successfully!");
-      setFile(null);
+      alert("Song Uploaded Successfully!");
+      setSongFile(null);
       refreshSongs();
     } catch (err) {
       alert(err.message);
-    } finally {
-      setUploading(false);
     }
+
+    setUploading(false);
   };
 
   return (
     <div className="upload-box">
       <h3>📤 Upload Song</h3>
 
-      <label className="custom-file-upload">
+      <label className="file-upload-btn">
         🎵 Choose Song
         <input
           type="file"
           accept="audio/*"
-          onChange={(e) => setFile(e.target.files[0])}
+          onChange={(e) => setSongFile(e.target.files[0])}
         />
       </label>
 
-      {file && <p className="selected-file">Selected: {file.name}</p>}
+      {songFile && <p className="selected-file">Selected: {songFile.name}</p>}
 
-      <button onClick={uploadSong} disabled={uploading}>
+      <button className="btn-green" onClick={uploadSong} disabled={uploading}>
         {uploading ? "Uploading..." : "Upload Song"}
       </button>
     </div>
