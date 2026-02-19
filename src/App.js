@@ -261,449 +261,453 @@ export default function App() {
           // Play/Pause sync for MP3 player
           if (audioRef.current) {
             if (updatedRoom.is_playing) {
-              audioRef.current.play();
+              audioRef.current.play().catch(() => {
+                console.log("Autoplay blocked. User interaction required.");
+                alert("Click Play once to enable audio on this device 🎧");
+              });
               setIsPlaying(true);
-            } else {
-              audioRef.current.pause();
-              setIsPlaying(false);
             }
+
+          } else {
+            audioRef.current.pause();
+            setIsPlaying(false);
           }
         }
-      )
-      .subscribe();
+  )
+    .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [room, roomSongs, session]);
-
-  // ---------------------------
-  // DRIFT SYNC TIMER (HOST MP3)
-  // ---------------------------
-  useEffect(() => {
-    if (!room || !session || !isHost) return;
-    if (!roomSongs.length) return;
-
-    const interval = setInterval(async () => {
-      if (!audioRef.current) return;
-
-      await supabase
-        .from("rooms")
-        .update({
-          playback_time: audioRef.current.currentTime,
-          is_playing: !audioRef.current.paused,
-          current_song_url: roomSongs[roomCurrentIndex]?.song_url,
-          current_song_name: roomSongs[roomCurrentIndex]?.song_name,
-        })
-        .eq("room_code", room.room_code);
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [room, session, isHost, roomSongs, roomCurrentIndex]);
-
-  // ---------------------------
-  // DELETE PERSONAL SONG
-  // ---------------------------
-  const deleteSong = async (song) => {
-    try {
-      const { error } = await supabase.from("songs").delete().eq("id", song.id);
-
-      if (error) throw error;
-
-      alert("Song deleted!");
-      fetchSongs();
-    } catch (err) {
-      alert(err.message);
-    }
+  return () => {
+    supabase.removeChannel(channel);
   };
+}, [room, roomSongs, session]);
 
-  // ---------------------------
-  // PLAYER CONTROLS
-  // ---------------------------
-  const togglePlay = async () => {
-    if (!activePlaylist.length) return;
-    if (!canControlPlayer) return;
+// ---------------------------
+// DRIFT SYNC TIMER (HOST MP3)
+// ---------------------------
+useEffect(() => {
+  if (!room || !session || !isHost) return;
+  if (!roomSongs.length) return;
 
-    if (isPlaying) {
-      audioRef.current.pause();
-      setIsPlaying(false);
-    } else {
-      await audioRef.current.play();
-      setIsPlaying(true);
-    }
+  const interval = setInterval(async () => {
+    if (!audioRef.current) return;
 
-    await updateRoom({
-      current_song_url: roomSongs[roomCurrentIndex]?.song_url,
-      current_song_name: roomSongs[roomCurrentIndex]?.song_name,
-      playback_time: audioRef.current.currentTime,
-      is_playing: !isPlaying,
-    });
-  };
+    await supabase
+      .from("rooms")
+      .update({
+        playback_time: audioRef.current.currentTime,
+        is_playing: !audioRef.current.paused,
+        current_song_url: roomSongs[roomCurrentIndex]?.song_url,
+        current_song_name: roomSongs[roomCurrentIndex]?.song_name,
+      })
+      .eq("room_code", room.room_code);
+  }, 2000);
 
-  const nextSong = async () => {
-    if (!activePlaylist.length) return;
-    if (!canControlPlayer) return;
+  return () => clearInterval(interval);
+}, [room, session, isHost, roomSongs, roomCurrentIndex]);
 
-    let nextIndex;
+// ---------------------------
+// DELETE PERSONAL SONG
+// ---------------------------
+const deleteSong = async (song) => {
+  try {
+    const { error } = await supabase.from("songs").delete().eq("id", song.id);
 
-    if (shuffle) {
-      nextIndex = Math.floor(Math.random() * activePlaylist.length);
-    } else {
-      nextIndex = (activeIndex + 1) % activePlaylist.length;
-    }
+    if (error) throw error;
 
-    if (room) setRoomCurrentIndex(nextIndex);
-    else setCurrentIndex(nextIndex);
+    alert("Song deleted!");
+    fetchSongs();
+  } catch (err) {
+    alert(err.message);
+  }
+};
 
-    setIsPlaying(true);
+// ---------------------------
+// PLAYER CONTROLS
+// ---------------------------
+const togglePlay = async () => {
+  if (!activePlaylist.length) return;
+  if (!canControlPlayer) return;
 
-    await updateRoom({
-      current_song_url: roomSongs[nextIndex]?.song_url,
-      current_song_name: roomSongs[nextIndex]?.song_name,
-      playback_time: 0,
-      is_playing: true,
-    });
-  };
-
-  const prevSong = async () => {
-    if (!activePlaylist.length) return;
-    if (!canControlPlayer) return;
-
-    let prevIndex;
-
-    if (shuffle) {
-      prevIndex = Math.floor(Math.random() * activePlaylist.length);
-    } else {
-      prevIndex =
-        (activeIndex - 1 + activePlaylist.length) % activePlaylist.length;
-    }
-
-    if (room) setRoomCurrentIndex(prevIndex);
-    else setCurrentIndex(prevIndex);
-
-    setIsPlaying(true);
-
-    await updateRoom({
-      current_song_url: roomSongs[prevIndex]?.song_url,
-      current_song_name: roomSongs[prevIndex]?.song_name,
-      playback_time: 0,
-      is_playing: true,
-    });
-  };
-
-  const handleSongEnd = async () => {
-    if (repeat === "one") {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play();
-
-      await updateRoom({
-        playback_time: 0,
-        is_playing: true,
-      });
-
-      return;
-    }
-
-    nextSong();
-  };
-
-  const toggleRepeat = () => {
-    if (!canControlPlayer) return;
-
-    if (repeat === "off") setRepeat("all");
-    else if (repeat === "all") setRepeat("one");
-    else setRepeat("off");
-  };
-
-  const handleSeek = async (e) => {
-    if (!canControlPlayer) return;
-
-    const newTime = e.target.value;
-    audioRef.current.currentTime = newTime;
-    setCurrentTime(newTime);
-
-    await updateRoom({
-      playback_time: newTime,
-    });
-  };
-
-  const handleTimeUpdate = () => {
-    setCurrentTime(audioRef.current.currentTime);
-  };
-
-  const handleLoadedMetadata = () => {
-    setDuration(audioRef.current.duration);
-  };
-
-  const handleVolume = (e) => {
-    const newVol = e.target.value;
-    setVolume(newVol);
-    audioRef.current.volume = newVol;
-  };
-
-  const formatTime = (time) => {
-    if (!time) return "0:00";
-    const min = Math.floor(time / 60);
-    const sec = Math.floor(time % 60);
-    return `${min}:${sec < 10 ? "0" : ""}${sec}`;
-  };
-
-  // ---------------------------
-  // LOGOUT
-  // ---------------------------
-  const logout = async () => {
-    await supabase.auth.signOut();
-    setSession(null);
-    setSongs([]);
-    setRoomSongs([]);
-    setCurrentIndex(0);
-    setRoomCurrentIndex(0);
+  if (isPlaying) {
+    audioRef.current.pause();
     setIsPlaying(false);
-    setRoom(null);
-  };
+  } else {
+    await audioRef.current.play();
+    setIsPlaying(true);
+  }
 
-  return (
-    <div className="spotify-app">
-      <div className="top-header">
-        <h2>🎵 BeatSync</h2>
+  await updateRoom({
+    current_song_url: roomSongs[roomCurrentIndex]?.song_url,
+    current_song_name: roomSongs[roomCurrentIndex]?.song_name,
+    playback_time: audioRef.current.currentTime,
+    is_playing: !isPlaying,
+  });
+};
 
-        {session && (
-          <div className="top-user">
-            <span>{session.user.email}</span>
-            <button onClick={logout}>Logout</button>
-          </div>
-        )}
-      </div>
+const nextSong = async () => {
+  if (!activePlaylist.length) return;
+  if (!canControlPlayer) return;
 
-      {!session ? (
-        <div className="auth-page">
-          <Auth setSession={setSession} />
-        </div>
-      ) : (
-        <div className="spotify-layout">
-          {/* LEFT SIDEBAR */}
-          <div className="sidebar-left">
-            <h3 className="sidebar-title">Library</h3>
+  let nextIndex;
 
-            <div className="sidebar-menu">
-              <button
-                className={page === "player" ? "menu-btn active-menu" : "menu-btn"}
-                onClick={() => setPage("player")}
-              >
-                🎵 Player
-              </button>
+  if (shuffle) {
+    nextIndex = Math.floor(Math.random() * activePlaylist.length);
+  } else {
+    nextIndex = (activeIndex + 1) % activePlaylist.length;
+  }
 
-              <button
-                className={page === "library" ? "menu-btn active-menu" : "menu-btn"}
-                onClick={() => setPage("library")}
-              >
-                🌍 Online Library
-              </button>
-            </div>
+  if (room) setRoomCurrentIndex(nextIndex);
+  else setCurrentIndex(nextIndex);
 
-            {page === "player" && (
-              <>
-                {!room ? (
-                  <div className="sidebar-section">
-                    <h4>🎶 Your Playlist</h4>
-                    <Playlist
-                      songs={songs}
-                      currentIndex={currentIndex}
-                      setCurrentIndex={setCurrentIndex}
-                      deleteSong={deleteSong}
-                    />
-                  </div>
-                ) : (
-                  <div className="sidebar-section">
-                    <h4>🎧 Room Playlist</h4>
-                    <RoomPlaylist
-                      roomSongs={roomSongs}
-                      roomCurrentIndex={roomCurrentIndex}
-                      setRoomCurrentIndex={setRoomCurrentIndex}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+  setIsPlaying(true);
 
-          {/* CENTER MAIN */}
-          <div className="main-center">
-            {!room ? (
-              <Room session={session} setRoom={setRoom} />
-            ) : (
-              <div className="room-banner">
-                <h3>
-                  Room Code: <span className="room-code">{room.room_code}</span>
-                </h3>
+  await updateRoom({
+    current_song_url: roomSongs[nextIndex]?.song_url,
+    current_song_name: roomSongs[nextIndex]?.song_name,
+    playback_time: 0,
+    is_playing: true,
+  });
+};
 
-                <p>{isHost ? "👑 You are Host" : "🎧 You are Listener"}</p>
+const prevSong = async () => {
+  if (!activePlaylist.length) return;
+  if (!canControlPlayer) return;
 
-                {!isHost && (
-                  <p style={{ color: "#1db954", fontWeight: "bold" }}>
-                    Host is controlling playback 🎧
-                  </p>
-                )}
+  let prevIndex;
 
-                <button
-                  className="leave-room-btn"
-                  onClick={() => {
-                    setRoom(null);
-                    setRoomSongs([]);
-                  }}
-                >
-                  Leave Room
-                </button>
-              </div>
-            )}
+  if (shuffle) {
+    prevIndex = Math.floor(Math.random() * activePlaylist.length);
+  } else {
+    prevIndex =
+      (activeIndex - 1 + activePlaylist.length) % activePlaylist.length;
+  }
 
-            {/* PLAYER PAGE */}
-            {page === "player" && (
-              <>
-                <UploadSong user={session.user} refreshSongs={fetchSongs} />
+  if (room) setRoomCurrentIndex(prevIndex);
+  else setCurrentIndex(prevIndex);
 
-                {/* HOST ADD SONGS */}
-                {room && isHost && (
-                  <div className="add-room-song">
-                    <h3>Add Songs to Room</h3>
+  setIsPlaying(true);
 
-                    {songs.length === 0 ? (
-                      <p style={{ color: "gray" }}>
-                        Upload songs first to add into room playlist.
-                      </p>
-                    ) : (
-                      songs.map((song) => (
-                        <button
-                          key={song.id}
-                          className="room-add-btn"
-                          onClick={() => addSongToRoom(song)}
-                        >
-                          ➕ {song.song_name}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
+  await updateRoom({
+    current_song_url: roomSongs[prevIndex]?.song_url,
+    current_song_name: roomSongs[prevIndex]?.song_name,
+    playback_time: 0,
+    is_playing: true,
+  });
+};
 
-                {/* MAIN MP3 PLAYER */}
-                {activePlaylist.length > 0 ? (
-                  <div className="now-playing">
-                    <h2>Now Playing</h2>
-                    <p className="song-title-main">
-                      {activePlaylist[activeIndex]?.song_name}
-                    </p>
+const handleSongEnd = async () => {
+  if (repeat === "one") {
+    audioRef.current.currentTime = 0;
+    audioRef.current.play();
 
-                    <audio
-                      ref={audioRef}
-                      onTimeUpdate={handleTimeUpdate}
-                      onLoadedMetadata={handleLoadedMetadata}
-                      onEnded={handleSongEnd}
-                    >
-                      <source
-                        src={activePlaylist[activeIndex]?.song_url}
-                        type="audio/mpeg"
-                      />
-                    </audio>
-                  </div>
-                ) : (
-                  <p style={{ color: "gray" }}>No songs available.</p>
-                )}
-              </>
-            )}
+    await updateRoom({
+      playback_time: 0,
+      is_playing: true,
+    });
 
-            {/* ONLINE LIBRARY PAGE */}
-            {page === "library" && (
-              <>
-                <YouTubeLibrary session={session} room={room} />
-                {room && <RoomYouTubePlayer room={room} session={session} />}
-              </>
-            )}
-          </div>
+    return;
+  }
 
-          {/* RIGHT SIDEBAR */}
-          <div className="sidebar-right">
-            {room ? (
-              <>
-                <RoomChat room={room} session={session} />
-                <RoomMembers room={room} session={session} />
-              </>
-            ) : (
-              <p style={{ color: "gray" }}>Join a room to use chat & members.</p>
-            )}
-          </div>
+  nextSong();
+};
 
-          {/* BOTTOM PLAYER BAR */}
-          {page === "player" && activePlaylist.length > 0 && (
-            <div className="bottom-player">
-              <div className="bottom-song">
-                <p>{activePlaylist[activeIndex]?.song_name}</p>
-              </div>
+const toggleRepeat = () => {
+  if (!canControlPlayer) return;
 
-              <div className="bottom-controls">
-                <button
-                  onClick={() => setShuffle(!shuffle)}
-                  className={shuffle ? "active-btn" : ""}
-                  disabled={!canControlPlayer}
-                >
-                  🔀
-                </button>
+  if (repeat === "off") setRepeat("all");
+  else if (repeat === "all") setRepeat("one");
+  else setRepeat("off");
+};
 
-                <button onClick={prevSong} disabled={!canControlPlayer}>
-                  ⏮
-                </button>
+const handleSeek = async (e) => {
+  if (!canControlPlayer) return;
 
-                <button
-                  onClick={togglePlay}
-                  className="play-btn"
-                  disabled={!canControlPlayer}
-                >
-                  {isPlaying ? "⏸" : "▶"}
-                </button>
+  const newTime = e.target.value;
+  audioRef.current.currentTime = newTime;
+  setCurrentTime(newTime);
 
-                <button onClick={nextSong} disabled={!canControlPlayer}>
-                  ⏭
-                </button>
+  await updateRoom({
+    playback_time: newTime,
+  });
+};
 
-                <button
-                  onClick={toggleRepeat}
-                  className={repeat !== "off" ? "active-btn" : ""}
-                  disabled={!canControlPlayer}
-                >
-                  🔁
-                </button>
-              </div>
+const handleTimeUpdate = () => {
+  setCurrentTime(audioRef.current.currentTime);
+};
 
-              <div className="bottom-seek">
-                <span>{formatTime(currentTime)}</span>
+const handleLoadedMetadata = () => {
+  setDuration(audioRef.current.duration);
+};
 
-                <input
-                  type="range"
-                  min="0"
-                  max={duration || 0}
-                  value={currentTime}
-                  onChange={handleSeek}
-                  disabled={!canControlPlayer}
-                />
+const handleVolume = (e) => {
+  const newVol = e.target.value;
+  setVolume(newVol);
+  audioRef.current.volume = newVol;
+};
 
-                <span>{formatTime(duration)}</span>
-              </div>
+const formatTime = (time) => {
+  if (!time) return "0:00";
+  const min = Math.floor(time / 60);
+  const sec = Math.floor(time % 60);
+  return `${min}:${sec < 10 ? "0" : ""}${sec}`;
+};
 
-              <div className="bottom-volume">
-                <label>🔊</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={volume}
+// ---------------------------
+// LOGOUT
+// ---------------------------
+const logout = async () => {
+  await supabase.auth.signOut();
+  setSession(null);
+  setSongs([]);
+  setRoomSongs([]);
+  setCurrentIndex(0);
+  setRoomCurrentIndex(0);
+  setIsPlaying(false);
+  setRoom(null);
+};
 
-                  onChange={handleVolume}
-                />
-              </div>
-            </div>
-          )}
+return (
+  <div className="spotify-app">
+    <div className="top-header">
+      <h2>🎵 BeatSync</h2>
+
+      {session && (
+        <div className="top-user">
+          <span>{session.user.email}</span>
+          <button onClick={logout}>Logout</button>
         </div>
       )}
     </div>
-  );
+
+    {!session ? (
+      <div className="auth-page">
+        <Auth setSession={setSession} />
+      </div>
+    ) : (
+      <div className="spotify-layout">
+        {/* LEFT SIDEBAR */}
+        <div className="sidebar-left">
+          <h3 className="sidebar-title">Library</h3>
+
+          <div className="sidebar-menu">
+            <button
+              className={page === "player" ? "menu-btn active-menu" : "menu-btn"}
+              onClick={() => setPage("player")}
+            >
+              🎵 Player
+            </button>
+
+            <button
+              className={page === "library" ? "menu-btn active-menu" : "menu-btn"}
+              onClick={() => setPage("library")}
+            >
+              🌍 Online Library
+            </button>
+          </div>
+
+          {page === "player" && (
+            <>
+              {!room ? (
+                <div className="sidebar-section">
+                  <h4>🎶 Your Playlist</h4>
+                  <Playlist
+                    songs={songs}
+                    currentIndex={currentIndex}
+                    setCurrentIndex={setCurrentIndex}
+                    deleteSong={deleteSong}
+                  />
+                </div>
+              ) : (
+                <div className="sidebar-section">
+                  <h4>🎧 Room Playlist</h4>
+                  <RoomPlaylist
+                    roomSongs={roomSongs}
+                    roomCurrentIndex={roomCurrentIndex}
+                    setRoomCurrentIndex={setRoomCurrentIndex}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* CENTER MAIN */}
+        <div className="main-center">
+          {!room ? (
+            <Room session={session} setRoom={setRoom} />
+          ) : (
+            <div className="room-banner">
+              <h3>
+                Room Code: <span className="room-code">{room.room_code}</span>
+              </h3>
+
+              <p>{isHost ? "👑 You are Host" : "🎧 You are Listener"}</p>
+
+              {!isHost && (
+                <p style={{ color: "#1db954", fontWeight: "bold" }}>
+                  Host is controlling playback 🎧
+                </p>
+              )}
+
+              <button
+                className="leave-room-btn"
+                onClick={() => {
+                  setRoom(null);
+                  setRoomSongs([]);
+                }}
+              >
+                Leave Room
+              </button>
+            </div>
+          )}
+
+          {/* PLAYER PAGE */}
+          {page === "player" && (
+            <>
+              <UploadSong user={session.user} refreshSongs={fetchSongs} />
+
+              {/* HOST ADD SONGS */}
+              {room && isHost && (
+                <div className="add-room-song">
+                  <h3>Add Songs to Room</h3>
+
+                  {songs.length === 0 ? (
+                    <p style={{ color: "gray" }}>
+                      Upload songs first to add into room playlist.
+                    </p>
+                  ) : (
+                    songs.map((song) => (
+                      <button
+                        key={song.id}
+                        className="room-add-btn"
+                        onClick={() => addSongToRoom(song)}
+                      >
+                        ➕ {song.song_name}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* MAIN MP3 PLAYER */}
+              {activePlaylist.length > 0 ? (
+                <div className="now-playing">
+                  <h2>Now Playing</h2>
+                  <p className="song-title-main">
+                    {activePlaylist[activeIndex]?.song_name}
+                  </p>
+
+                  <audio
+                    ref={audioRef}
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={handleLoadedMetadata}
+                    onEnded={handleSongEnd}
+                  >
+                    <source
+                      src={activePlaylist[activeIndex]?.song_url}
+                      type="audio/mpeg"
+                    />
+                  </audio>
+                </div>
+              ) : (
+                <p style={{ color: "gray" }}>No songs available.</p>
+              )}
+            </>
+          )}
+
+          {/* ONLINE LIBRARY PAGE */}
+          {page === "library" && (
+            <>
+              <YouTubeLibrary session={session} room={room} />
+              {room && <RoomYouTubePlayer room={room} session={session} />}
+            </>
+          )}
+        </div>
+
+        {/* RIGHT SIDEBAR */}
+        <div className="sidebar-right">
+          {room ? (
+            <>
+              <RoomChat room={room} session={session} />
+              <RoomMembers room={room} session={session} />
+            </>
+          ) : (
+            <p style={{ color: "gray" }}>Join a room to use chat & members.</p>
+          )}
+        </div>
+
+        {/* BOTTOM PLAYER BAR */}
+        {page === "player" && activePlaylist.length > 0 && (
+          <div className="bottom-player">
+            <div className="bottom-song">
+              <p>{activePlaylist[activeIndex]?.song_name}</p>
+            </div>
+
+            <div className="bottom-controls">
+              <button
+                onClick={() => setShuffle(!shuffle)}
+                className={shuffle ? "active-btn" : ""}
+                disabled={!canControlPlayer}
+              >
+                🔀
+              </button>
+
+              <button onClick={prevSong} disabled={!canControlPlayer}>
+                ⏮
+              </button>
+
+              <button
+                onClick={togglePlay}
+                className="play-btn"
+                disabled={!canControlPlayer}
+              >
+                {isPlaying ? "⏸" : "▶"}
+              </button>
+
+              <button onClick={nextSong} disabled={!canControlPlayer}>
+                ⏭
+              </button>
+
+              <button
+                onClick={toggleRepeat}
+                className={repeat !== "off" ? "active-btn" : ""}
+                disabled={!canControlPlayer}
+              >
+                🔁
+              </button>
+            </div>
+
+            <div className="bottom-seek">
+              <span>{formatTime(currentTime)}</span>
+
+              <input
+                type="range"
+                min="0"
+                max={duration || 0}
+                value={currentTime}
+                onChange={handleSeek}
+                disabled={!canControlPlayer}
+              />
+
+              <span>{formatTime(duration)}</span>
+            </div>
+
+            <div className="bottom-volume">
+              <label>🔊</label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={volume}
+
+                onChange={handleVolume}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    )}
+  </div>
+);
 }
