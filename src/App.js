@@ -214,66 +214,64 @@ export default function App() {
   }, [room, fetchRoomSongs]);
 
   // ---------------------------
-  // REALTIME ROOM PLAYER SYNC
-  // ---------------------------
-  useEffect(() => {
-    if (!room) return;
+// REALTIME ROOM PLAYER SYNC
+// ---------------------------
+useEffect(() => {
+  if (!room) return;
 
-    const channel = supabase
-      .channel(`room-sync-${room.room_code}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "rooms",
-          filter: `room_code=eq.${room.room_code}`,
-        },
-        (payload) => {
-          const updatedRoom = payload.new;
-          setRoom(updatedRoom);
+  const channel = supabase
+    .channel(`room-sync-${room.room_code}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "rooms",
+        filter: `room_code=eq.${room.room_code}`,
+      },
+      (payload) => {
+        const updatedRoom = payload.new;
+        setRoom(updatedRoom);
 
-          // Host ignore updates
-          if (session && updatedRoom.host_id === session.user.id) return;
+        // Host ignore updates
+        if (session && updatedRoom.host_id === session.user.id) return;
 
-          // Sync MP3 song index (if host using MP3 mode)
-          if (updatedRoom.current_song_url) {
-            const idx = roomSongs.findIndex(
-              (s) => s.song_url === updatedRoom.current_song_url
-            );
+        // Sync MP3 song index (if host using MP3 mode)
+        if (updatedRoom.current_song_url) {
+          const idx = roomSongs.findIndex(
+            (s) => s.song_url === updatedRoom.current_song_url
+          );
 
-            if (idx !== -1) {
-              setRoomCurrentIndex(idx);
-            }
+          if (idx !== -1) {
+            setRoomCurrentIndex(idx);
           }
+        }
 
-          // Drift correction for MP3 player
-          if (audioRef.current && updatedRoom.playback_time !== null) {
-            const serverTime = updatedRoom.playback_time || 0;
-            const localTime = audioRef.current.currentTime;
-            const drift = Math.abs(localTime - serverTime);
+        // Drift correction for MP3 player
+        if (audioRef.current && updatedRoom.playback_time !== null) {
+          const serverTime = updatedRoom.playback_time || 0;
+          const localTime = audioRef.current.currentTime;
+          const drift = Math.abs(localTime - serverTime);
 
-            if (drift > 0.7) {
-              audioRef.current.currentTime = serverTime;
-            }
+          if (drift > 0.7) {
+            audioRef.current.currentTime = serverTime;
           }
+        }
 
-          // Play/Pause sync for MP3 player
-          if (audioRef.current) {
-            if (updatedRoom.is_playing) {
-              audioRef.current.play().catch(() => {
-                console.log("Autoplay blocked. User interaction required.");
-                alert("Click Play once to enable audio on this device 🎧");
-              });
-              setIsPlaying(true);
-            }
-
+        // Play/Pause sync for MP3 player (Autoplay fix)
+        if (audioRef.current) {
+          if (updatedRoom.is_playing) {
+            audioRef.current.play().catch(() => {
+              alert("Click Play once to enable audio on this device 🎧");
+            });
+            setIsPlaying(true);
           } else {
             audioRef.current.pause();
             setIsPlaying(false);
           }
         }
-  )
+      }
+    )
     .subscribe();
 
   return () => {
