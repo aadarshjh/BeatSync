@@ -126,8 +126,11 @@ export default function App() {
   // ---------------------------
   // SYNC WHEN USER JOINS ROOM
   // ---------------------------
+
   useEffect(() => {
-    if (!room || !audioRef.current) return;
+    if (!room) return;
+    if (!roomSongs.length) return;
+    if (!audioRef.current) return;
 
     const syncOnJoin = async () => {
       const { data, error } = await supabase
@@ -138,7 +141,6 @@ export default function App() {
 
       if (error || !data) return;
 
-      // Find correct song index
       const idx = roomSongs.findIndex(
         (s) => s.song_url === data.current_song_url
       );
@@ -147,23 +149,24 @@ export default function App() {
         setRoomCurrentIndex(idx);
       }
 
-      // Wait for audio to load
       setTimeout(() => {
-        if (audioRef.current) {
-          audioRef.current.currentTime = data.playback_time || 0;
+        if (!audioRef.current) return;
 
-          if (data.is_playing) {
-            audioRef.current.play().catch(() => {
-              alert("Click play once to enable audio 🎧");
-            });
-            setIsPlaying(true);
-          }
+        audioRef.current.currentTime = data.playback_time || 0;
+
+        if (data.is_playing) {
+          audioRef.current.play().catch(() => {
+            alert("Click play once to enable audio 🎧");
+          });
+          setIsPlaying(true);
         }
-      }, 500);
+      }, 300);
     };
 
     syncOnJoin();
-  }, [room, roomSongs]);
+
+  }, [room, roomSongs, audioRef]);
+
 
 
   // ---------------------------
