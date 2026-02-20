@@ -305,65 +305,62 @@ export default function App() {
 
 
   // ---------------------------
-  // REALTIME ROOM PLAYER SYNC
+  // REALTIME ROOM SYNC (FINAL CLEAN VERSION)
   // ---------------------------
   useEffect(() => {
     if (!room) return;
+
+    console.log("Subscribing to room:", room.room_code);
 
     const channel = supabase
       .channel(`room-sync-${room.room_code}`)
       .on(
         "postgres_changes",
         {
-          event: "UPDATE",
+          event: "*",
           schema: "public",
           table: "rooms",
           filter: `room_code=eq.${room.room_code}`,
         },
-        (payload) => {
-          const updatedRoom = payload.new;
-          setRoom(updatedRoom);
+        async (payload) => {
+          console.log("ROOM UPDATE RECEIVED:", payload.new);
 
-          // Host ignore updates
+          const updatedRoom = payload.new;
+
+          // Host ignores its own updates
           if (session && updatedRoom.host_id === session.user.id) return;
 
-          // Sync MP3 song index (if host using MP3 mode)
-          if (updatedRoom.current_song_url) {
-            const idx = roomSongs.findIndex(
-              (s) => s.song_url === updatedRoom.current_song_url
-            );
+          if (!audioRef.current) return;
 
-            if (idx !== -1) {
-              setRoomCurrentIndex(idx);
-            }
+          // Find correct song
+          const idx = roomSongs.findIndex(
+            (s) => s.song_url === updatedRoom.current_song_url
+          );
+
+          if (idx !== -1) {
+            setRoomCurrentIndex(idx);
           }
 
-          // Drift correction for MP3 player
-          if (audioRef.current && updatedRoom.playback_time !== null) {
-            const serverTime = updatedRoom.playback_time || 0;
-            const localTime = audioRef.current.currentTime;
-            const drift = Math.abs(localTime - serverTime);
+          setTimeout(() => {
+            if (!audioRef.current) return;
 
-            if (drift > 0.7) {
-              audioRef.current.currentTime = serverTime;
-            }
-          }
+            audioRef.current.currentTime = updatedRoom.playback_time || 0;
 
-          // Play/Pause sync for MP3 player (Autoplay fix)
-          if (audioRef.current) {
             if (updatedRoom.is_playing) {
               audioRef.current.play().catch(() => {
-                alert("Click Play once to enable audio on this device 🎧");
+                console.log("Autoplay blocked");
               });
               setIsPlaying(true);
             } else {
               audioRef.current.pause();
               setIsPlaying(false);
             }
-          }
+          }, 200);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("Subscription status:", status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -393,6 +390,7 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [room, session, isHost, roomSongs, roomCurrentIndex]);
+
 
   // ---------------------------
   // DELETE PERSONAL SONG
