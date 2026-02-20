@@ -119,10 +119,28 @@ export default function App() {
       setRoomCurrentIndex(0);
     }
   }, [room, roomCurrentIndex]);
-
   useEffect(() => {
-    if (room) fetchRoomSongs();
-  }, [room, fetchRoomSongs]);
+    if (!room) return;
+
+    const loadRoomSongs = async () => {
+      const { data, error } = await supabase
+        .from("room_songs")
+        .select("*")
+        .eq("room_code", room.room_code)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.error("Room songs fetch error:", error);
+        return;
+      }
+
+      console.log("Room songs loaded:", data);
+      setRoomSongs(data || []);
+    };
+
+    loadRoomSongs();
+  }, [room]);
+
   // ---------------------------
   // SYNC WHEN USER JOINS ROOM
   // ---------------------------
@@ -182,12 +200,10 @@ export default function App() {
     if (!activePlaylist.length) return;
     if (!audioRef.current) return;
 
+    audioRef.current.src = activePlaylist[activeIndex]?.song_url;
     audioRef.current.load();
+  }, [activeIndex, activePlaylist]);
 
-    if (isPlaying) {
-      audioRef.current.play();
-    }
-  }, [activeIndex, activePlaylist, isPlaying]);
 
   // ---------------------------
   // UPDATE ROOM (HOST ONLY)
@@ -232,23 +248,52 @@ export default function App() {
   };
 
   // ---------------------------
-  // REALTIME ROOM SONGS SYNC
+  // REALTIME ROOM SYNC (CLEAN VERSION)
   // ---------------------------
   useEffect(() => {
     if (!room) return;
 
     const channel = supabase
-      .channel(`room-songs-${room.room_code}`)
+      .channel(`room-sync-${room.room_code}`)
       .on(
         "postgres_changes",
         {
-          event: "*",
+          event: "UPDATE",
           schema: "public",
-          table: "room_songs",
+          table: "rooms",
           filter: `room_code=eq.${room.room_code}`,
         },
-        () => {
-          fetchRoomSongs();
+        async (payload) => {
+          const updatedRoom = payload.new;
+
+          // Host should ignore its own updates
+          if (session && updatedRoom.host_id === session.user.id) return;
+
+          // Find correct song
+          const idx = roomSongs.findIndex(
+            (s) => s.song_url === updatedRoom.current_song_url
+          );
+
+          if (idx !== -1) {
+            setRoomCurrentIndex(idx);
+          }
+
+          // Wait until audio exists
+          setTimeout(() => {
+            if (!audioRef.current) return;
+
+            audioRef.current.currentTime = updatedRoom.playback_time || 0;
+
+            if (updatedRoom.is_playing) {
+              audioRef.current.play().catch(() => {
+                console.log("Autoplay blocked");
+              });
+              setIsPlaying(true);
+            } else {
+              audioRef.current.pause();
+              setIsPlaying(false);
+            }
+          }, 200);
         }
       )
       .subscribe();
@@ -256,7 +301,8 @@ export default function App() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [room, fetchRoomSongs]);
+  }, [room, roomSongs, session]);
+
 
   // ---------------------------
   // REALTIME ROOM PLAYER SYNC
